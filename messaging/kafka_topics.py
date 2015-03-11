@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/python
 # -*- coding: utf-8 -*-
 
 # (c) 2015, James Bowes <jbowes@repl.ca>
@@ -24,17 +24,16 @@ module: kafka_topics
 short_description: Create and modify Kafka topics.
 description:
   - Create and modify I(Kafka) topics.
-notes:
-  - If you have multiple topics to modify, using the I(topics) option is much
-    faster, as it can execute C(kafka-topics.sh) fewer times.
 requirements:
   - C(kafka-topics.sh) must be installed on the host.
 author: James Bowes
 options:
-  name:
+  topics:
     description:
-      - The topic name to create or update
-    aliases: [topic]
+      - A list of topic names to create or update (using the default
+        I(partitions) and I(replicas)), or a list of dicts containing I(name),
+        I(partitions), and I(replicas) values.
+    required: True
   partitions:
     description:
       - The number of partitions for I(name), or the default partitions for
@@ -43,15 +42,16 @@ options:
     description:
       - The replication factor for I(name), or the default replication factor
         for I(topics) if nothing is specified.
-  topics:
-    description:
-      - A list of topic names to create or update (using the default
-        I(partitions) and I(replicas)), or a list of dicts containing I(name),
-        I(partitions), and I(replicas) values.
   zookeeper:
     description:
       - A I(ZooKeeper) connection string, as used by I(Kafka).
-    required: true
+    default: localhost:2181
+  state:
+    description:
+      - The desired state for all topics.
+      - To remove a topic, you must have a recent enough I(Kafka) (> 0.8.2).
+    default: present
+    choices: ["present", "absent"]
   path:
     description:
       - Optional path to the directory containing C(kafka-topics.sh), if it is
@@ -59,13 +59,7 @@ options:
 """
 
 EXAMPLES = """
-# Create a single topic
-- kafka_topics: name=my-topic partitions=1 replicas=1 zookeeper=localhost:2181
-
-# Increase the partition count of the above topic
-- kafka_topics: name=my-topic partitions=2 replicas=1 zookeeper=localhost:2181
-
-# Create and update multiple topics at once (faster!)
+# Create and update multiple topics
 - kafka_topics:
     topics: [my-topic, my-other-topic]
     partitions: 1
@@ -94,6 +88,12 @@ EXAMPLES = """
     partitions: 1
     replicas: 2
     zookeeper: localhost:2181
+
+# Remove some topics
+- kafka_topics:
+    topics:
+      - remove-this
+      - and-this
 """
 
 import re
@@ -107,10 +107,6 @@ def read_topics(kafka_topics, m):
     p = m.params
 
     cmd = "%s --zookeeper %s --describe" % (kafka_topics, p["zookeeper"])
-    # If a single topic was given, it will be faster to only check it
-    if p["topic"]:
-        cmd += " --topic %s" % (p["topic"],)
-
     rc, out, err = m.run_command(cmd)
     if rc:
         m.fail_json(msg="listing topics failed: %s" % (err), stdout=out)
@@ -133,9 +129,11 @@ def read_topics(kafka_topics, m):
 def execute_change(kafka_topics, m, state, topic, partitions, replicas):
     p = m.params
 
-    cmd = "%s --zookeeper %s --%s --topic %s --partitions %d" % (kafka_topics,
-            p["zookeeper"], state, topic, partitions)
+    cmd = "%s --zookeeper %s --%s --topic %s" % (kafka_topics, p["zookeeper"],
+            state, topic)
 
+    if state != "delete":
+        cmd += " --partitions %d" % (partitions,)
     if state == "create":
         cmd += " --replication-factor %d" % (replicas,)
 
@@ -153,13 +151,12 @@ def main():
     module = AnsibleModule(
         argument_spec = dict(
             path=dict(default=None),
-            zookeeper=dict(required=True),
-            topics=dict(default=None, type='list'),
-            topic=dict(default=None, aliases=["name"]),
+            zookeeper=dict(default="localhost:2181"),
+            topics=dict(default=None, required=True, type="list"),
             partitions=dict(default=None, type="int"),
             replicas=dict(default=None, type="int"),
+            state=dict(default="present", choices=["present", "absent"]),
         ),
-        required_one_of=[["topic", "topics"]],
         supports_check_mode=True,
     )
 
@@ -169,43 +166,32 @@ def main():
     args = ["partitions", "replicas"]
 
     topics = {}
-    if p["topic"]:
-        for arg in args:
-            if not p[arg]:
-                module.fail_json("You must provide '%s' for a single topic" %
-                        (arg,))
-        topic_spec = {k: p[k] for k in args}
-        topics[p["topic"]] = topic_spec
-    else:
-        for topic in p["topics"]:
-            name = None
-            if isinstance(topic, basestring):
-                name = topic
-                topics[name] = {
-                        "partitions": p["partitions"],
-                        "replicas": p["replicas"],
-                        }
-            elif isinstance(topic, collections.Mapping):
-                name = topic.get("name")
-                name = name if name else topic.get("topic")
-                if name is None:
-                    module.fail_json(msg="You must provide a topic name")
+    for topic in p["topics"]:
+        name = None
+        if isinstance(topic, basestring):
+            name = topic
+            topics[name] = {
+                    "partitions": p["partitions"],
+                    "replicas": p["replicas"],
+                    }
+        elif isinstance(topic, collections.Mapping):
+            name = topic.get("name")
+            name = name if name else topic.get("topic")
+            if name is None:
+                module.fail_json(msg="You must provide a topic name")
 
-                topics[name] = {k: topic.get(k) if topic.get(k) else p[k]
-                        for k in args}
-            else:
-                module.fail_json(msg="'topics' must be a list of strings or "
-                        "dicts")
+            topics[name] = {k: topic.get(k) if topic.get(k) else p[k]
+                    for k in args}
+        else:
+            module.fail_json(msg="'topics' must be a list of strings or "
+                    "dicts")
 
-            spec = topics[name]
-            if None in [spec["partitions"], p["replicas"]]:
-                    module.fail_json(msg="You must provide partitions and "
-                            "replicas for topic '%s' without "
-                            "overrides" % (name))
-
-
-
-
+        spec = topics[name]
+        if None in [spec["partitions"], p["replicas"]] and \
+                p["state"] != "absent":
+                module.fail_json(msg="You must provide partitions and "
+                        "replicas for topic '%s' without "
+                        "overrides" % (name))
 
     kafka_topics = module.get_bin_path("kafka-topics.sh",
             opt_dirs=[p["path"]], required=True)
@@ -215,10 +201,13 @@ def main():
     # Asked to decrease the replicas, which isn't possible
     altered = {}
     created = {}
+    deleted = []
     for name, spec in topics.items():
-        # Does it already exist? if so, should we change
-        # the partitions/replicas?
-        if name in existing_topics:
+        if name in existing_topics and p["state"] == "absent":
+            deleted.append(name)
+        elif name in existing_topics:
+            # Does it already exist? if so, should we change
+            # the partitions/replicas?
             existing = existing_topics[name]
             for k in args:
                 if k == "partitions" and spec[k] < existing[k]:
@@ -232,10 +221,10 @@ def main():
 
                 if spec[k] != existing[k]:
                     altered[name] = spec
-        else:
+        elif p["state"] != "absent":
             created[name] = spec
 
-    if altered or created:
+    if altered or created or deleted:
         changed = True
 
     out = dict(changed=changed)
@@ -246,6 +235,10 @@ def main():
     if altered:
         msgs.append("ALTERED: " + ", ".join([k for k in altered.keys()]))
         out["altered"] = altered
+    if deleted:
+        msgs.append("DELETED: " + ", ".join([k for k in deleted]))
+        out["deleted"] = deleted
+
     if changed:
         out["msg"] = " ".join(msgs)
 
@@ -257,6 +250,9 @@ def main():
         for name, spec in created.items():
             execute_change(kafka_topics, module, "create", name,
                     spec["partitions"], spec["replicas"])
+
+        for name in deleted:
+            execute_change(kafka_topics, module, "delete", name, None, None)
 
     module.exit_json(**out)
 
