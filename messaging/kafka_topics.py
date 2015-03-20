@@ -31,17 +31,19 @@ options:
   topics:
     description:
       - A list of topic names to create or update (using the default
-        I(partitions) and I(replicas)), or a list of dicts containing I(name),
-        I(partitions), and I(replicas) values.
+        I(partitions), I(replicas), and I(config)), or a list of dicts containing I(name),
+        I(partitions), I(replicas), and I(config) values.
+      - I(config) is a comma separated list of valid key-value configs for the given topic.
     required: True
   partitions:
     description:
-      - The number of partitions for I(name), or the default partitions for
-        I(topics) if nothing is specified.
+      - The default partitions for I(topics) if nothing is specified.
   replicas:
     description:
-      - The replication factor for I(name), or the default replication factor
-        for I(topics) if nothing is specified.
+      - The default replication factor for I(topics) if nothing is specified.
+  config:
+    description:
+      - The default per-topic config for I(topics) if nothing is specified.
   zookeeper:
     description:
       - A I(ZooKeeper) connection string, as used by I(Kafka).
@@ -103,6 +105,11 @@ import collections
 # import module snippets
 from ansible.module_utils.basic import *
 
+
+def config_dict(config_str):
+    return dict(p.split("=") for p in config_str.split(",") if "=" in p)
+
+
 def read_topics(kafka_topics, m):
     p = m.params
 
@@ -114,19 +121,22 @@ def read_topics(kafka_topics, m):
     topics = {}
     config_re = re.compile("^Topic:(?P<name>\S+)\s*"
                            "PartitionCount:(?P<partitions>\d+)\s*"
-                           "ReplicationFactor:(?P<replicas>\d+)",
+                           "ReplicationFactor:(?P<replicas>\d+)\s*"
+                           "Configs:(?P<config>\S*)",
                            flags=re.MULTILINE)
     matches = config_re.finditer(out)
     for match in matches:
         topics[match.group("name")] = {
                 "partitions": int(match.group("partitions")),
                 "replicas": int(match.group("replicas")),
+                "config": config_dict(match.group("config")),
                 }
 
     return topics
 
 
-def execute_change(kafka_topics, m, state, topic, partitions, replicas):
+def execute_change(kafka_topics, m, state, topic, partitions, replicas,
+        alter_config={}, remove_config={}):
     p = m.params
 
     cmd = "%s --zookeeper %s --%s --topic %s" % (kafka_topics, p["zookeeper"],
@@ -134,6 +144,12 @@ def execute_change(kafka_topics, m, state, topic, partitions, replicas):
 
     if state != "delete":
         cmd += " --partitions %d" % (partitions,)
+
+        for k, v in alter_config.items():
+            cmd += " --config %s=%s" % (k, v)
+        for k in remove_config:
+            cmd += " --delete-config %s" % (k,)
+
     if state == "create":
         cmd += " --replication-factor %d" % (replicas,)
 
@@ -155,6 +171,7 @@ def main():
             topics=dict(default=None, required=True, type="list"),
             partitions=dict(default=None, type="int"),
             replicas=dict(default=None, type="int"),
+            config=dict(default=""),
             state=dict(default="present", choices=["present", "absent"]),
         ),
         supports_check_mode=True,
@@ -163,7 +180,7 @@ def main():
     changed = False
 
     p = module.params
-    args = ["partitions", "replicas"]
+    args = ["partitions", "replicas", "config"]
 
     topics = {}
     for topic in p["topics"]:
@@ -173,6 +190,7 @@ def main():
             topics[name] = {
                     "partitions": p["partitions"],
                     "replicas": p["replicas"],
+                    "config": p["config"],
                     }
         elif isinstance(topic, collections.Mapping):
             name = topic.get("name")
@@ -187,6 +205,7 @@ def main():
                     "dicts")
 
         spec = topics[name]
+        spec["config"] = config_dict(spec["config"])
         if None in [spec["partitions"], p["replicas"]] and \
                 p["state"] != "absent":
                 module.fail_json(msg="You must provide partitions and "
@@ -220,6 +239,14 @@ def main():
                     module.fail_json(msg=msg)
 
                 if spec[k] != existing[k]:
+                    if k == "config":
+                        target_config = spec["config"]
+                        spec["config"] = dict((k, v) for k, v
+                                in target_config.items() \
+                                if v != existing["config"].get(k))
+                        spec["config_deleted"] = [k for k
+                                in existing["config"] if k not in target_config]
+
                     altered[name] = spec
         elif p["state"] != "absent":
             created[name] = spec
@@ -245,11 +272,13 @@ def main():
     if not module.check_mode:
         for name, spec in altered.items():
             execute_change(kafka_topics, module, "alter", name,
-                    spec["partitions"], spec["replicas"])
+                    spec["partitions"], spec["replicas"],
+                    spec["config"], spec.get("config_deleted", []))
 
         for name, spec in created.items():
             execute_change(kafka_topics, module, "create", name,
-                    spec["partitions"], spec["replicas"])
+                    spec["partitions"], spec["replicas"],
+                    spec["config"])
 
         for name in deleted:
             execute_change(kafka_topics, module, "delete", name, None, None)
