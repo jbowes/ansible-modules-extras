@@ -440,8 +440,14 @@ def modify_webhooks(module, service):
         return changed
 
     webhooks = get_webhooks(module, service)
-    old_hooks = {h["name"]: h for h in webhooks}
-    new_hooks = {h["name"]: h for h in p["webhooks"]}
+    old_hooks = {}
+    for webhook in webhooks:
+        old_hooks[webhook["name"]] = webhook
+
+    new_hooks = {}
+    for webhook in p["webhooks"]:
+        new_hooks[webhook["name"]] = webhook
+
     added_webhooks = []
     changed_webhooks = []
     deleted_webhooks = []
