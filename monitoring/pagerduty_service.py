@@ -168,10 +168,9 @@ EXAMPLES = """
     resolve_timeout: 14400
 """
 
-from urllib import quote
+import urllib
 
 EMAIL_TYPES = ["generic_email", "pingdom", "keynote", "sql_monitor"]
-
 
 def fetch(module, method, path, data=None):
     p = module.params
@@ -196,8 +195,10 @@ def fetch(module, method, path, data=None):
 
 def get_service(module):
     p = module.params
-    response = fetch(module, "GET", "services?query=%s&include%%5b%%5d=%s" %
-                     (quote(p["name"]), quote("escalation_policy")))
+    response = fetch(module, "GET", "services?" + urllib.urlencode({
+        "query": p["name"],
+        "include[]": "escalation_policy",
+    }))
     services = response.get("services", [])
     return next((x for x in services if x.get("name") == p["name"]), {})
 
@@ -232,9 +233,10 @@ def delete_service(module, service):
 
 
 def get_webhooks(module, service):
-    response = fetch(module, "GET", "webhooks?"
-                    "webhook_object%%5btype%%5d=service"
-                    "&webhook_object%%5bid%%5d=%s" % service["id"])
+    response = fetch(module, "GET", "webhooks?" + urllib.urlencode({
+        "webhook_object[type]": "service",
+        "webhook_object[id]": service["id"]
+    }))
     return response.get("webhooks", [])
 
 
@@ -400,7 +402,7 @@ def disabled_or_int(module, key):
 
 
 def get_user_id(module, email):
-    response = fetch(module, "GET", "users?query=%s" % quote(email))
+    response = fetch(module, "GET", "users?query=%s" % urllib.quote(email))
 
     if "users" not in response:
         module.fail_json(msg="Bad response from pagerduty")
@@ -417,7 +419,7 @@ def get_user_id(module, email):
 
 def get_escalation_policy_id(module, policy):
     response = fetch(module, "GET", "escalation_policies?query=%s" %
-            quote(policy))
+            urllib.quote(policy))
 
     if "escalation_policies" not in response:
         module.fail_json(msg="Bad response from pagerduty")
