@@ -107,6 +107,8 @@ from ansible.module_utils.basic import *
 
 
 def config_dict(config_str):
+    if isinstance(config_str, collections.Mapping):
+        return config_str
     return dict(p.split("=") for p in config_str.split(",") if "=" in p)
 
 
