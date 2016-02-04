@@ -108,7 +108,13 @@ from ansible.module_utils.basic import *
 
 def config_dict(config_str):
     if isinstance(config_str, collections.Mapping):
-        return config_str
+        config = {}
+        # Cast everything to strings for easy comparison
+        for k, v in config_str.iteritems():
+            if not isinstance(v, basestring):
+                v = str(v)
+            config[k] = v
+        return config
     return dict(p.split("=") for p in config_str.split(",") if "=" in p)
 
 
