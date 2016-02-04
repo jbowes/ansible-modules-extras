@@ -198,7 +198,7 @@ def main():
             topics[name] = {
                     "partitions": p["partitions"],
                     "replicas": p["replicas"],
-                    "config": p["config"],
+                    "config": config_dict(p["config"]),
                     }
         elif isinstance(topic, collections.Mapping):
             name = topic.get("name")
@@ -208,12 +208,19 @@ def main():
 
             topics[name] = {k: topic.get(k) if topic.get(k) else p[k]
                     for k in args}
+
+            topics[name]["config"] = config_dict(topics[name]["config"])
+            # Merge in defaults
+            default_config = config_dict(p["config"])
+            for k in default_config:
+                if k not in topics[name]["config"]:
+                    topics[name]["config"][k] = default_config[k]
         else:
             module.fail_json(msg="'topics' must be a list of strings or "
                     "dicts")
 
         spec = topics[name]
-        spec["config"] = config_dict(spec["config"])
+
         if None in [spec["partitions"], p["replicas"]] and \
                 p["state"] != "absent":
                 module.fail_json(msg="You must provide partitions and "
